@@ -9,7 +9,7 @@ staff = db.query(Staff).filter(Staff.email == "admin@retireesparadise.com").firs
 if staff:
     db.delete(staff)
     db.commit()
-    print("✅ Removed existing staff")
+    print("Removed existing staff")
 
 # Create new staff with SHA256
 staff = Staff(
