@@ -1,62 +1,163 @@
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Query
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import Optional
-from datetime import datetime
+from sqlalchemy import desc
+from typing import Optional, List
 from app.core.database import get_db
+from sqlalchemy import desc, func
+from datetime import datetime
 from app.models.db_models import Lead, LeadStatus
+from app.schemas.lead import LeadCreate, LeadUpdate, LeadResponse
+from app.core.security import decode_token
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import json
 
 router = APIRouter()
+security = HTTPBearer()
 
-class LeadCreate(BaseModel):
-    name: str
-    email: str
-    phone: str
-    age: Optional[int] = None
-    current_location: Optional[str] = None
-    retirement_status: Optional[str] = None
-    monthly_income: Optional[float] = None
-    desired_move_date: Optional[str] = None
-    desired_country: Optional[str] = None
-    budget: Optional[str] = None
-    timeline: Optional[str] = None
-    medical_requirements: Optional[str] = None
-    family_info: Optional[str] = None
-    lead_source: Optional[str] = "landing_page"
+def get_current_staff(token: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
+    """Verify JWT token and return staff_id"""
+    payload = decode_token(token.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return payload.get("id")
 
-class LeadResponse(BaseModel):
-    id: int
-    name: str
-    email: str
-    phone: str
-    age: Optional[int]
-    current_location: Optional[str]
-    retirement_status: Optional[str]
-    monthly_income: Optional[float]
-    desired_move_date: Optional[str]
-    desired_country: Optional[str]
-    status: str
-    qualification_score: Optional[str]
-    created_at: datetime
-    
-    class Config:
-        from_attributes = True
-
+# CREATE LEAD
 @router.post("/", response_model=LeadResponse)
 def create_lead(lead: LeadCreate, db: Session = Depends(get_db)):
+    """Create a new lead from landing page form"""
+    # Check if lead already exists (by email)
+    existing = db.query(Lead).filter(Lead.email == lead.email).first()
+    if existing:
+        # Update existing lead instead of creating duplicate
+        for key, value in lead.dict(exclude_unset=True).items():
+            setattr(existing, key, value)
+        existing.updated_at = func.now()
+        db.commit()
+        db.refresh(existing)
+        return existing
+    
+    # Create new lead
     db_lead = Lead(**lead.dict())
     db.add(db_lead)
     db.commit()
     db.refresh(db_lead)
     return db_lead
 
-@router.get("/", response_model=list[LeadResponse])
-def get_leads(db: Session = Depends(get_db)):
-    return db.query(Lead).order_by(Lead.created_at.desc()).all()
+# LIST LEADS
+@router.get("/", response_model=List[LeadResponse])
+def get_leads(
+    db: Session = Depends(get_db),
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0
+):
+    """Get all leads with optional filters"""
+    query = db.query(Lead)
+    
+    # Filter by status
+    if status:
+        query = query.filter(Lead.status == status)
+    
+    # Search by name or email
+    if search:
+        query = query.filter(
+            (Lead.name.ilike(f"%{search}%")) | 
+            (Lead.email.ilike(f"%{search}%"))
+        )
+    
+    # Order by newest first
+    query = query.order_by(desc(Lead.created_at))
+    
+    # Pagination
+    query = query.offset(offset).limit(limit)
+    
+    return query.all()
 
+# GET SINGLE LEAD
 @router.get("/{lead_id}", response_model=LeadResponse)
 def get_lead(lead_id: int, db: Session = Depends(get_db)):
+    """Get a single lead by ID"""
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
+    return lead
+
+# UPDATE LEAD
+@router.put("/{lead_id}", response_model=LeadResponse)
+def update_lead(
+    lead_id: int,
+    lead_update: LeadUpdate,
+    db: Session = Depends(get_db),
+    staff_id: int = Depends(get_current_staff)
+):
+    """Update a lead (status, assigned_to, notes, qualification)"""
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    # Update only provided fields
+    update_data = lead_update.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(lead, key, value)
+    
+    # Add to communication history if status changed
+    if "status" in update_data:
+        history_entry = {
+             "date": datetime.now().isoformat(),
+            "type": "status_change",
+            "message": f"Status changed to: {update_data['status']}",
+            "by": staff_id
+        }
+        if not lead.communication_history:
+            lead.communication_history = []
+        lead.communication_history.append(history_entry)
+    
+    lead.updated_at = func.now()
+    db.commit()
+    db.refresh(lead)
+    return lead
+
+# DELETE LEAD
+@router.delete("/{lead_id}")
+def delete_lead(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    staff_id: int = Depends(get_current_staff)
+):
+    """Delete a lead (admin only)"""
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    db.delete(lead)
+    db.commit()
+    return {"message": "Lead deleted successfully"}
+
+# ADD COMMUNICATION HISTORY
+@router.post("/{lead_id}/communication")
+def add_communication(
+    lead_id: int,
+    communication: dict,
+    db: Session = Depends(get_db),
+    staff_id: int = Depends(get_current_staff)
+):
+    """Add a communication history entry"""
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+
+    if not lead.communication_history:
+        lead.communication_history = []
+    
+    entry = {
+        "date": func.now().isoformat(),
+        "type": communication.get("type", "note"),
+        "message": communication.get("message", ""),
+        "by": staff_id
+    }
+    lead.communication_history.append(entry)
+    db.commit()
+    db.refresh(lead)
     return lead

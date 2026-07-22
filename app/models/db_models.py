@@ -3,6 +3,12 @@ from sqlalchemy.sql import func
 from app.core.database import Base
 import enum
 
+from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, JSON, Float, ForeignKey
+from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
+from app.core.database import Base
+import enum
+
 class LeadStatus(str, enum.Enum):
     NEW = "new"
     CONTACTED = "contacted"
@@ -18,7 +24,7 @@ class Lead(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     
-    # Personal Info
+    # Personal Information (from form)
     name = Column(String(255), nullable=False)
     email = Column(String(255), nullable=False, index=True)
     phone = Column(String(50), nullable=False)
@@ -33,22 +39,25 @@ class Lead(Base):
     medical_requirements = Column(Text, nullable=True)
     family_info = Column(Text, nullable=True)
     
-    # CRM Fields
+    # CRM Fields (from workflow)
     lead_source = Column(String(100), default="landing_page")
     status = Column(Enum(LeadStatus), default=LeadStatus.NEW)
-    assigned_to = Column(String(255), nullable=True)
+    assigned_to = Column(Integer, ForeignKey("staff.id"), nullable=True)
     
-    # Qualification
-    qualification_score = Column(String(20), nullable=True)  # Hot/Warm/Cold
-    qualification_reasoning = Column(Text, nullable=True)
-    
-    # Communication
+    # Communication & Notes
     communication_history = Column(JSON, default=list)
     notes = Column(Text, nullable=True)
+    
+    # AI Qualification
+    qualification_score = Column(String(20), nullable=True)  # Hot/Warm/Cold
+    qualification_reasoning = Column(Text, nullable=True)
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationship
+    assigned_staff = relationship("Staff", foreign_keys=[assigned_to])
 
 class Staff(Base):
     __tablename__ = "staff"
