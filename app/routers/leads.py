@@ -3,10 +3,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import Optional, List
 from app.core.database import get_db
+from app.services.qualification_service import score_lead
 from sqlalchemy import desc, func
 from datetime import datetime
 from app.models.db_models import Lead, LeadStatus
 from app.schemas.lead import LeadCreate, LeadUpdate, LeadResponse
+from app.services.qualification_service import score_lead
 from app.core.security import decode_token
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import json
@@ -22,18 +24,31 @@ def get_current_staff(token: HTTPAuthorizationCredentials = Depends(security), d
     return payload.get("id")
 
 # CREATE LEAD
+# Add this import at the top
+from app.services.qualification_service import score_lead
+
+# In the create_lead function, after creating the lead:
 @router.post("/", response_model=LeadResponse)
 def create_lead(lead: LeadCreate, db: Session = Depends(get_db)):
-    """Create a new lead from landing page form"""
-    # Check if lead already exists (by email)
+    # Check if lead already exists
     existing = db.query(Lead).filter(Lead.email == lead.email).first()
     if existing:
-        # Update existing lead instead of creating duplicate
         for key, value in lead.dict(exclude_unset=True).items():
             setattr(existing, key, value)
         existing.updated_at = func.now()
         db.commit()
         db.refresh(existing)
+        
+        #  Auto-qualify on update
+        try:
+            qualification = score_lead(existing.__dict__)
+            existing.qualification_score = qualification["score"]
+            existing.qualification_reasoning = qualification["reasoning"]
+            db.commit()
+            db.refresh(existing)
+        except Exception as e:
+            print(f"Qualification failed: {e}")
+        
         return existing
     
     # Create new lead
@@ -41,6 +56,17 @@ def create_lead(lead: LeadCreate, db: Session = Depends(get_db)):
     db.add(db_lead)
     db.commit()
     db.refresh(db_lead)
+    
+    #  Auto-qualify the lead
+    try:
+        qualification = score_lead(db_lead.__dict__)
+        db_lead.qualification_score = qualification["score"]
+        db_lead.qualification_reasoning = qualification["reasoning"]
+        db.commit()
+        db.refresh(db_lead)
+    except Exception as e:
+        print(f"Qualification failed: {e}")
+    
     return db_lead
 
 # LIST LEADS
@@ -117,6 +143,46 @@ def update_lead(
     db.commit()
     db.refresh(lead)
     return lead
+
+# this endpoint after the update_lead function
+
+@router.post("/{lead_id}/requalify")
+def requalify_lead(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    staff_id: int = Depends(get_current_staff)
+):
+    """Manually re-run AI qualification on a lead"""
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    try:
+        qualification = score_lead(lead.__dict__)
+        lead.qualification_score = qualification["score"]
+        lead.qualification_reasoning = qualification["reasoning"]
+        lead.updated_at = func.now()
+        
+        # Add to communication history
+        if not lead.communication_history:
+            lead.communication_history = []
+        lead.communication_history.append({
+            "date": datetime.now().isoformat(),
+            "type": "requalify",
+            "message": f"Re-qualified: {qualification['score']} - {qualification['reasoning'][:100]}...",
+            "by": staff_id
+        })
+        
+        db.commit()
+        db.refresh(lead)
+        return {
+            "score": lead.qualification_score,
+            "reasoning": lead.qualification_reasoning
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Qualification failed: {str(e)}")
+
+
 
 # DELETE LEAD
 @router.delete("/{lead_id}")
