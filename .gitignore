@@ -1,0 +1,24 @@
+# Create the file
+echo "# Python" > backend/.gitignore
+echo "venv/" >> backend/.gitignore
+echo "env/" >> backend/.gitignore
+echo "ENV/" >> backend/.gitignore
+echo "__pycache__/" >> backend/.gitignore
+echo "*.pyc" >> backend/.gitignore
+echo "*.pyo" >> backend/.gitignore
+echo "*.pyd" >> backend/.gitignore
+echo ".Python" >> backend/.gitignore
+echo "" >> backend/.gitignore
+echo "# Environment" >> backend/.gitignore
+echo ".env" >> backend/.gitignore
+echo ".env.local" >> backend/.gitignore
+echo "" >> backend/.gitignore
+echo "# IDE" >> backend/.gitignore
+echo ".idea/" >> backend/.gitignore
+echo ".vscode/" >> backend/.gitignore
+echo "*.swp" >> backend/.gitignore
+echo "*.swo" >> backend/.gitignore
+echo "" >> backend/.gitignore
+echo "# OS" >> backend/.gitignore
+echo ".DS_Store" >> backend/.gitignore
+echo "Thumbs.db" >> backend/.gitignore
