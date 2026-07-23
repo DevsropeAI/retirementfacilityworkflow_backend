@@ -6,6 +6,8 @@ from typing import Optional, List
 from app.core.database import get_db
 from app.models.db_models import Consultation, Lead, LeadStatus
 from app.schemas.consultation import ConsultationCreate, ConsultationUpdate, ConsultationResponse
+from app.services.notification_service import create_notification
+from app.models.db_models import Staff
 from app.core.security import decode_token
 from app.services.email_service import send_email
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -182,7 +184,7 @@ def create_consultation(
     db.commit()
     db.refresh(db_consultation)
     
-    # ✅ Auto-update lead status to "consultation"
+    #  Auto-update lead status to "consultation"
     if lead.status != LeadStatus.CONSULTATION:
         lead.status = LeadStatus.CONSULTATION
         lead.updated_at = func.now()
@@ -199,13 +201,13 @@ def create_consultation(
         
         db.commit()
     
-    # ✅ Send confirmation email
+    #  Send confirmation email
     try:
         send_consultation_confirmation(db_consultation, lead)
     except Exception as e:
         logger.error(f"Confirmation email failed: {e}")
     
-    # ✅ Log in communication history
+    #  Log in communication history
     if not lead.communication_history:
         lead.communication_history = []
     lead.communication_history.append({
@@ -215,6 +217,22 @@ def create_consultation(
         "by": staff_id
     })
     db.commit()
+
+    #  Send staff notification (in-app)
+    try:
+        # Get the staff who booked it
+        staff = db.query(Staff).filter(Staff.id == staff_id).first()
+        if staff:
+            create_notification(
+                db=db,
+                staff_id=staff_id,
+                title="📅 New Consultation Booked",
+                message=f"Consultation booked for {lead.name} on {scheduled_date.strftime('%B %d, %Y')} at {consultation.scheduled_time}",
+                type="consultation_booked",
+                link=f"/leads/{lead.id}"
+            )
+    except Exception as e:
+        logger.error(f"Notification failed: {e}")
     
     return db_consultation
 

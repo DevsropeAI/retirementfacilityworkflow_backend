@@ -101,3 +101,24 @@ class Staff(Base):
     role = Column(String(50), default="staff")  # admin / staff
     is_active = Column(Integer, default=1)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    staff_id = Column(Integer, ForeignKey("staff.id"), nullable=False)
+    
+    # Notification Details
+    title = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    type = Column(String(50), nullable=False)  # consultation_booked, lead_created, reminder, status_change
+    link = Column(String(500), nullable=True)  # URL to navigate to
+    
+    # Status
+    is_read = Column(Integer, default=0)  # 0 = unread, 1 = read
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationship
+    staff = relationship("Staff", backref="notifications")

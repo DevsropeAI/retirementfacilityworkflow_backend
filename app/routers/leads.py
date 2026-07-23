@@ -6,6 +6,8 @@ from typing import Optional, List
 from app.core.database import get_db
 from app.models.db_models import Lead, LeadStatus
 from app.schemas.lead import LeadCreate, LeadUpdate, LeadResponse
+from app.services.notification_service import create_notification
+from app.models.db_models import Staff
 from app.core.security import decode_token
 from app.services.qualification_service import score_lead
 from app.services.followup_service import send_welcome, send_score_followup
@@ -53,35 +55,52 @@ def create_lead(lead: LeadCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_lead)
 
-    # ✅ Auto-qualify the lead FIRST
+    #  Auto-qualify the lead FIRST
     try:
         qualification = score_lead(db_lead.__dict__)
         db_lead.qualification_score = qualification["score"]
         db_lead.qualification_reasoning = qualification["reasoning"]
         db.commit()
         db.refresh(db_lead)
-        print(f"✅ Lead qualified: {db_lead.qualification_score}")
+        print(f" Lead qualified: {db_lead.qualification_score}")
     except Exception as e:
-        print(f"❌ Qualification failed: {e}")
+        print(f" Qualification failed: {e}")
     
-    # ✅ THEN send follow-ups (now qualification_score is set)
+    #  THEN send follow-ups (now qualification_score is set)
     # Auto-trigger: Send Welcome Email
     try:
         result = send_welcome(db_lead, db)
-        print(f"✅ Welcome email result: {result}")
+        print(f" Welcome email result: {result}")
     except Exception as e:
-        print(f"❌ Welcome email failed: {e}")
+        print(f" Welcome email failed: {e}")
 
     # Auto-trigger: Send Score Follow-up
     try:
         if db_lead.qualification_score:
             result = send_score_followup(db_lead, db)
-            print(f"✅ Score follow-up result: {result}")
+            print(f" Score follow-up result: {result}")
         else:
-            print("⚠️ No qualification score available, skipping follow-up")
+            print(" No qualification score available, skipping follow-up")
     except Exception as e:
-        print(f"❌ Score follow-up failed: {e}")
-    
+        print(f" Score follow-up failed: {e}")
+
+    #  Send notification for Hot leads
+    try:
+        if db_lead.qualification_score == "Hot":
+            # Notify all staff
+            staff_list = db.query(Staff).filter(Staff.is_active == 1).all()
+            for staff in staff_list:
+                create_notification(
+                    db=db,
+                    staff_id=staff.id,
+                    title="🔥 New Hot Lead",
+                    message=f"{db_lead.name} — a new Hot lead has been captured!",
+                    type="lead_created",
+                    link=f"/leads/{db_lead.id}"
+                )
+    except Exception as e:
+        print(f"Notification failed: {e}")    
+        
     return db_lead
 
 
