@@ -59,6 +59,38 @@ class Lead(Base):
     # Relationship
     assigned_staff = relationship("Staff", foreign_keys=[assigned_to])
 
+
+class Consultation(Base):
+    __tablename__ = "consultations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    lead_id = Column(Integer, ForeignKey("leads.id"), nullable=False)
+    
+    # Consultation Details
+    consultation_type = Column(String(50), nullable=False)  # phone, zoom, facility_tour
+    scheduled_date = Column(DateTime, nullable=False)
+    scheduled_time = Column(String(20), nullable=False)  # e.g., "10:00 AM"
+    duration = Column(Integer, default=60)  # minutes
+    notes = Column(Text, nullable=True)
+    
+    # Status
+    status = Column(String(50), default="scheduled")  # scheduled, completed, cancelled, no_show
+    
+    # Zoom/Meeting details (optional)
+    meeting_link = Column(String(500), nullable=True)
+    meeting_id = Column(String(100), nullable=True)
+    
+    # Reminders
+    reminder_sent = Column(Integer, default=0)  # 0 = not sent, 1 = sent
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationship
+    lead = relationship("Lead", backref="consultations")
+
+
 class Staff(Base):
     __tablename__ = "staff"
 

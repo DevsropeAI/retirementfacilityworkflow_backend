@@ -1,15 +1,14 @@
 from fastapi import APIRouter, HTTPException, Depends, status, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
-from typing import Optional, List
-from app.core.database import get_db
-from app.services.qualification_service import score_lead
 from sqlalchemy import desc, func
 from datetime import datetime
+from typing import Optional, List
+from app.core.database import get_db
 from app.models.db_models import Lead, LeadStatus
 from app.schemas.lead import LeadCreate, LeadUpdate, LeadResponse
-from app.services.qualification_service import score_lead
 from app.core.security import decode_token
+from app.services.qualification_service import score_lead
+from app.services.followup_service import send_welcome, send_score_followup
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import json
 
@@ -23,11 +22,8 @@ def get_current_staff(token: HTTPAuthorizationCredentials = Depends(security), d
         raise HTTPException(status_code=401, detail="Invalid token")
     return payload.get("id")
 
-# CREATE LEAD
-# Add this import at the top
-from app.services.qualification_service import score_lead
 
-# In the create_lead function, after creating the lead:
+# ============ CREATE LEAD ============
 @router.post("/", response_model=LeadResponse)
 def create_lead(lead: LeadCreate, db: Session = Depends(get_db)):
     # Check if lead already exists
@@ -39,7 +35,7 @@ def create_lead(lead: LeadCreate, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(existing)
         
-        #  Auto-qualify on update
+        # Auto-qualify on update
         try:
             qualification = score_lead(existing.__dict__)
             existing.qualification_score = qualification["score"]
@@ -56,20 +52,40 @@ def create_lead(lead: LeadCreate, db: Session = Depends(get_db)):
     db.add(db_lead)
     db.commit()
     db.refresh(db_lead)
-    
-    #  Auto-qualify the lead
+
+    # ✅ Auto-qualify the lead FIRST
     try:
         qualification = score_lead(db_lead.__dict__)
         db_lead.qualification_score = qualification["score"]
         db_lead.qualification_reasoning = qualification["reasoning"]
         db.commit()
         db.refresh(db_lead)
+        print(f"✅ Lead qualified: {db_lead.qualification_score}")
     except Exception as e:
-        print(f"Qualification failed: {e}")
+        print(f"❌ Qualification failed: {e}")
+    
+    # ✅ THEN send follow-ups (now qualification_score is set)
+    # Auto-trigger: Send Welcome Email
+    try:
+        result = send_welcome(db_lead, db)
+        print(f"✅ Welcome email result: {result}")
+    except Exception as e:
+        print(f"❌ Welcome email failed: {e}")
+
+    # Auto-trigger: Send Score Follow-up
+    try:
+        if db_lead.qualification_score:
+            result = send_score_followup(db_lead, db)
+            print(f"✅ Score follow-up result: {result}")
+        else:
+            print("⚠️ No qualification score available, skipping follow-up")
+    except Exception as e:
+        print(f"❌ Score follow-up failed: {e}")
     
     return db_lead
 
-# LIST LEADS
+
+# ============ LIST LEADS ============
 @router.get("/", response_model=List[LeadResponse])
 def get_leads(
     db: Session = Depends(get_db),
@@ -100,7 +116,8 @@ def get_leads(
     
     return query.all()
 
-# GET SINGLE LEAD
+
+# ============ GET SINGLE LEAD ============
 @router.get("/{lead_id}", response_model=LeadResponse)
 def get_lead(lead_id: int, db: Session = Depends(get_db)):
     """Get a single lead by ID"""
@@ -109,7 +126,8 @@ def get_lead(lead_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Lead not found")
     return lead
 
-# UPDATE LEAD
+
+# ============ UPDATE LEAD ============
 @router.put("/{lead_id}", response_model=LeadResponse)
 def update_lead(
     lead_id: int,
@@ -130,7 +148,7 @@ def update_lead(
     # Add to communication history if status changed
     if "status" in update_data:
         history_entry = {
-             "date": datetime.now().isoformat(),
+            "date": datetime.now().isoformat(),
             "type": "status_change",
             "message": f"Status changed to: {update_data['status']}",
             "by": staff_id
@@ -144,8 +162,53 @@ def update_lead(
     db.refresh(lead)
     return lead
 
-# this endpoint after the update_lead function
 
+# ============ DELETE LEAD ============
+@router.delete("/{lead_id}")
+def delete_lead(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    staff_id: int = Depends(get_current_staff)
+):
+    """Delete a lead (admin only)"""
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    db.delete(lead)
+    db.commit()
+    return {"message": "Lead deleted successfully"}
+
+
+# ============ ADD COMMUNICATION ============
+@router.post("/{lead_id}/communication")
+def add_communication(
+    lead_id: int,
+    communication: dict,
+    db: Session = Depends(get_db),
+    staff_id: int = Depends(get_current_staff)
+):
+    """Add a communication history entry"""
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    if not lead.communication_history:
+        lead.communication_history = []
+    
+    entry = {
+        "date": datetime.now().isoformat(),
+        "type": communication.get("type", "note"),
+        "message": communication.get("message", ""),
+        "by": staff_id
+    }
+    lead.communication_history.append(entry)
+    db.commit()
+    db.refresh(lead)
+    return lead
+
+
+# ============ RE-QUALIFY LEAD ============
 @router.post("/{lead_id}/requalify")
 def requalify_lead(
     lead_id: int,
@@ -162,6 +225,14 @@ def requalify_lead(
         lead.qualification_score = qualification["score"]
         lead.qualification_reasoning = qualification["reasoning"]
         lead.updated_at = func.now()
+        
+        # ✅ Send follow-up after scoring
+        if lead.qualification_score:
+            try:
+                result = send_score_followup(lead, db)
+                print(f"✅ Re-qualify follow-up result: {result}")
+            except Exception as e:
+                print(f"❌ Score follow-up failed: {e}")
         
         # Add to communication history
         if not lead.communication_history:
@@ -181,49 +252,3 @@ def requalify_lead(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Qualification failed: {str(e)}")
-
-
-
-# DELETE LEAD
-@router.delete("/{lead_id}")
-def delete_lead(
-    lead_id: int,
-    db: Session = Depends(get_db),
-    staff_id: int = Depends(get_current_staff)
-):
-    """Delete a lead (admin only)"""
-    lead = db.query(Lead).filter(Lead.id == lead_id).first()
-    if not lead:
-        raise HTTPException(status_code=404, detail="Lead not found")
-    
-    db.delete(lead)
-    db.commit()
-    return {"message": "Lead deleted successfully"}
-
-# ADD COMMUNICATION HISTORY
-@router.post("/{lead_id}/communication")
-def add_communication(
-    lead_id: int,
-    communication: dict,
-    db: Session = Depends(get_db),
-    staff_id: int = Depends(get_current_staff)
-):
-    """Add a communication history entry"""
-    lead = db.query(Lead).filter(Lead.id == lead_id).first()
-    if not lead:
-        raise HTTPException(status_code=404, detail="Lead not found")
-
-
-    if not lead.communication_history:
-        lead.communication_history = []
-    
-    entry = {
-        "date": func.now().isoformat(),
-        "type": communication.get("type", "note"),
-        "message": communication.get("message", ""),
-        "by": staff_id
-    }
-    lead.communication_history.append(entry)
-    db.commit()
-    db.refresh(lead)
-    return lead
