@@ -8,6 +8,9 @@ from app.models.db_models import Consultation, Lead, LeadStatus
 from app.schemas.consultation import ConsultationCreate, ConsultationUpdate, ConsultationResponse
 from app.services.notification_service import create_notification
 from app.models.db_models import Staff
+from datetime import datetime, timedelta
+from app.services.notification_service import create_notification
+from app.models.db_models import Staff
 from app.core.security import decode_token
 from app.services.email_service import send_email
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -101,17 +104,30 @@ The Retirees Paradise Team
     return success, msg
 
 
-def send_consultation_reminder(consultation: Consultation, lead: Lead):
-    """Send reminder email to lead (24h before)"""
+def send_consultation_reminder(consultation: Consultation, lead: Lead, db: Session):
+    """Send reminder email to lead and staff notification"""
+    
+    from datetime import datetime
+    
     date_str = consultation.scheduled_date.strftime("%B %d, %Y")
     time_str = consultation.scheduled_time
     
-    subject = f"Reminder: Your Consultation Tomorrow — Retirees Paradise"
+    # ✅ Determine if reminder is for today or tomorrow
+    today = datetime.now().date()
+    consultation_date = consultation.scheduled_date.date()
+    
+    if consultation_date == today:
+        reminder_text = "today"
+    else:
+        reminder_text = "tomorrow"
+    
+    # ============ 1. SEND LEAD EMAIL REMINDER ============
+    subject = f"⏰ Reminder: Your Consultation {reminder_text.capitalize()} — Retirees Paradise"
     
     body = f"""
 Dear {lead.name},
 
-This is a friendly reminder about your consultation tomorrow!
+This is a friendly reminder about your consultation {reminder_text}!
 
 📅 Date: {date_str}
 ⏰ Time: {time_str}
@@ -126,26 +142,69 @@ The Retirees Paradise Team
 """
     
     html_body = f"""
-<h2>Reminder: Your Consultation Tomorrow</h2>
+<h2>⏰ Reminder: Your Consultation {reminder_text.capitalize()}</h2>
 <p>Dear {lead.name},</p>
-<p>This is a friendly reminder about your consultation tomorrow!</p>
+<p>This is a friendly reminder about your consultation {reminder_text}!</p>
 
 <table style="border-collapse: collapse; width: 100%; max-width: 500px;">
   <tr><td style="padding: 8px 0;"><strong>📅 Date:</strong></td><td>{date_str}</td></tr>
   <tr><td style="padding: 8px 0;"><strong>⏰ Time:</strong></td><td>{time_str}</td></tr>
   <tr><td style="padding: 8px 0;"><strong>🕐 Duration:</strong></td><td>{consultation.duration} minutes</td></tr>
-  {f'<tr><td style="padding: 8px 0;"><strong>🔗 Meeting Link:</strong></td><td><a href="{consultation.meeting_link}">{consultation.meeting_link}</a></td></tr>' if consultation.meeting_link else ''}
+  {f'<tr><td style="padding: 8px 0;"><strong>🔗 Link:</strong></td><td><a href="{consultation.meeting_link}">{consultation.meeting_link}</a></td></tr>' if consultation.meeting_link else ''}
 </table>
 
 <p>We look forward to speaking with you!</p>
 <p>Best regards,<br>The Retirees Paradise Team</p>
 """
     
-    success, msg = send_email(lead.email, subject, body, html_body)
+    # Send email to lead
+    email_success, email_msg = send_email(lead.email, subject, body, html_body)
+    logger.info(f"Reminder email to {lead.email}: {email_success}")
+    
+    # ============ 2. SEND STAFF IN-APP NOTIFICATION ============
+    try:
+        staff_list = db.query(Staff).filter(Staff.is_active == 1).all()
+        
+        notification_count = 0
+        for staff in staff_list:
+            try:
+                create_notification(
+                    db=db,
+                    staff_id=staff.id,
+                    title=f"⏰ Consultation {reminder_text.capitalize()}",
+                    message=f"Consultation with {lead.name} {reminder_text} at {time_str}",
+                    type="reminder",
+                    link=f"/leads/{lead.id}"
+                )
+                notification_count += 1
+            except Exception as e:
+                logger.error(f"Failed to create notification for staff {staff.id}: {e}")
+        
+        logger.info(f"Sent {notification_count} staff notifications for consultation {consultation.id}")
+        
+    except Exception as e:
+        logger.error(f"Staff notification failed: {e}")
+    
+    # ============ 3. LOG IN COMMUNICATION HISTORY ============
+    try:
+        if not lead.communication_history:
+            lead.communication_history = []
+        
+        lead.communication_history.append({
+            "date": datetime.now().isoformat(),
+            "type": "reminder_sent",
+            "message": f"{reminder_text.capitalize()} reminder sent to lead ({email_success}) and {notification_count} staff members",
+            "by": "system"
+        })
+        db.commit()
+    except Exception as e:
+        logger.error(f"Communication history logging failed: {e}")
+    
+    # ============ 4. MARK AS SENT ============
     consultation.reminder_sent = 1
-    logger.info(f"Reminder email sent to {lead.email}: {success}")
-    return success, msg
-
+    db.commit()
+    
+    return email_success, email_msg
 
 # ============ CREATE CONSULTATION ============
 @router.post("/", response_model=ConsultationResponse)
@@ -363,26 +422,50 @@ def send_reminder(
 
 # ============ AUTO-REMINDER BACKGROUND JOB ============
 def send_due_reminders(db: Session):
-    """Send reminders for consultations scheduled in 24 hours"""
-    now = datetime.now()
-    tomorrow = now + timedelta(days=1)
+    """Send reminders for consultations scheduled TODAY"""
+    from datetime import datetime
+    from sqlalchemy import func
     
-    # Find consultations scheduled for tomorrow where reminder hasn't been sent
+    today = datetime.now().date()
+    print(f"🔍 DEBUG: Today is {today}")
+    
+    # Query for consultations
     consultations = db.query(Consultation).options(joinedload(Consultation.lead)).filter(
-        func.date(Consultation.scheduled_date) == tomorrow.date(),
+        func.date(Consultation.scheduled_date) == today,
         Consultation.reminder_sent == 0,
-        Consultation.status == "scheduled"
+        Consultation.status.in_(["scheduled", "consultation"])
     ).all()
     
-    for consultation in consultations:
-        lead = consultation.lead
-        if lead and lead.email:
-            try:
-                send_consultation_reminder(consultation, lead)
-                consultation.reminder_sent = 1
-                logger.info(f"Reminder sent for consultation {consultation.id}")
-            except Exception as e:
-                logger.error(f"Failed to send reminder for {consultation.id}: {e}")
+    print(f"🔍 DEBUG: Found {len(consultations)} consultations")
     
+    sent_count = 0
+    for consultation in consultations:
+        print(f"🔍 DEBUG: Processing consultation {consultation.id}")
+        
+        lead = consultation.lead
+        if not lead:
+            print(f"   ❌ No lead found")
+            continue
+            
+        if not lead.email:
+            print(f"   ❌ No email for lead {lead.id}")
+            continue
+        
+        print(f"   ✅ Lead: {lead.name} ({lead.email})")
+        
+        try:
+            # ✅ Call with 2 arguments
+            success, msg = send_consultation_reminder(consultation, lead)
+            if success:
+                sent_count += 1
+                print(f"   ✅ Sent reminder for consultation {consultation.id}")
+            else:
+                print(f"   ❌ Failed: {msg}")
+        except Exception as e:
+            print(f"   ❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    print(f"🔍 DEBUG: Total sent: {sent_count}")
     db.commit()
-    return len(consultations)
+    return sent_count
