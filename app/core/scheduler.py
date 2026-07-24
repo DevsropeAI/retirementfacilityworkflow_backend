@@ -48,30 +48,27 @@ def send_daily_reminders():
 def start_scheduler():
     """Start the scheduler and add the daily job"""
     try:
-        # Remove existing job if it exists (avoid duplicates)
+        # Remove existing job if it exists
         try:
             scheduler.remove_job('daily_reminder_job')
         except:
-            pass  # Job doesn't exist yet
+            pass
         
-        # Add the daily job (runs at 9:00 AM every day)
+        # ✅ Add the job with proper args
         scheduler.add_job(
-            send_due_reminders,
-            trigger=CronTrigger(hour=9, minute=0, timezone=settings.SCHEDULER_TIMEZONE),
+            send_daily_reminders,
+            trigger=CronTrigger(hour=9, minute=0),
             id='daily_reminder_job',
-            replace_existing=True
+            replace_existing=True,
+            args=[]  # ← No args needed — it creates its own db session
         )
         
-        # Start the scheduler
         scheduler.start()
-        logger.info("✅ Scheduler started successfully")
-        logger.info("📅 Daily reminder job scheduled for 9:00 AM UTC")
-        
-        # Run immediately for testing (optional — comment out for production)
-        # send_daily_reminders()
+        print("✅ Scheduler started successfully")
+        print("📅 Daily reminder job scheduled for 9:00 AM UTC")
         
     except Exception as e:
-        logger.error(f"❌ Failed to start scheduler: {e}")
+        print(f"❌ Failed to start scheduler: {e}")
 
 def shutdown_scheduler():
     """Shutdown the scheduler gracefully"""
