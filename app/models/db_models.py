@@ -59,6 +59,10 @@ class Lead(Base):
     # Relationship
     assigned_staff = relationship("Staff", foreign_keys=[assigned_to])
 
+    #application fields
+    application_token = Column(String(64), nullable=True, unique=True)
+    application_sent_at = Column(DateTime(timezone=True), nullable=True)
+    application_status = Column(String(50), default="not_sent")
 
 class Consultation(Base):
     __tablename__ = "consultations"

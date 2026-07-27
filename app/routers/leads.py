@@ -11,6 +11,8 @@ from app.models.db_models import Staff
 from app.core.security import decode_token
 from app.services.qualification_service import score_lead
 from app.services.followup_service import send_welcome, send_score_followup
+from app.services.application_token_service import generate_application_token, generate_application_link
+from app.services.email_service import send_application_link
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import json
 
@@ -271,3 +273,73 @@ def requalify_lead(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Qualification failed: {str(e)}")
+
+
+
+# ============ SEND APPLICATION ============
+@router.post("/{lead_id}/send-application")
+def send_application(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    staff_id: int = Depends(get_current_staff)
+):
+    """
+    Generate application token and send application link to lead.
+    Updates lead status to 'application'.
+    """
+    # Check if lead exists
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    # Check if application already exists for this lead
+    from app.models.db_models import Application
+    existing_application = db.query(Application).filter(Application.lead_id == lead_id).first()
+    if existing_application:
+        raise HTTPException(
+            status_code=400, 
+            detail="An application already exists for this lead"
+        )
+    
+    # Generate token if it doesn't exist
+    if not lead.application_token:
+        from app.services.application_token_service import generate_application_token
+        lead.application_token = generate_application_token(lead_id)
+    
+    # Generate application link
+    from app.services.application_token_service import generate_application_link
+    link = generate_application_link(lead.application_token)
+    
+    # Send email with the link
+    from app.services.email_service import send_application_link
+    email_success, email_msg = send_application_link(lead.email, lead.name, link)
+    
+    if not email_success:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to send email: {email_msg}"
+        )
+    
+    # ✅ Update lead status to "application"
+    lead.status = LeadStatus.APPLICATION
+    lead.application_sent_at = datetime.now()
+    lead.application_status = "sent"
+    db.commit()
+    db.refresh(lead)
+    
+    # Log in communication history
+    if not lead.communication_history:
+        lead.communication_history = []
+    lead.communication_history.append({
+        "date": datetime.now().isoformat(),
+        "type": "application_invite",
+        "message": f"Application link sent to {lead.email}",
+        "by": staff_id
+    })
+    db.commit()
+    
+    return {
+        "message": "Application link sent successfully",
+        "link": link,
+        "token": lead.application_token
+    }

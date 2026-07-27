@@ -12,6 +12,8 @@ from app.models.db_models import Application, ApplicationStatus, Lead, Document
 from app.schemas.application import ApplicationCreate, ApplicationUpdate, ApplicationResponse, DocumentResponse
 from app.core.security import decode_token
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from app.services.application_token_service import get_lead_by_token
+
 
 router = APIRouter()
 security = HTTPBearer()
@@ -197,7 +199,7 @@ def approve_application(
     db: Session = Depends(get_db),
     staff_id: int = Depends(get_current_staff)
 ):
-    """Approve an application"""
+    """Approve an application and update lead status"""
     application = db.query(Application).filter(Application.id == application_id).first()
     if not application:
         raise HTTPException(status_code=404, detail="Application not found")
@@ -206,10 +208,12 @@ def approve_application(
     if notes:
         application.notes = notes
     
-    # Update lead status
+    # ✅ Update lead status to "approved"
     lead = application.lead
     if lead:
         lead.status = "approved"
+        lead.application_status = "approved"
+        db.commit()
     
     db.commit()
     db.refresh(application)
@@ -223,7 +227,7 @@ def reject_application(
     db: Session = Depends(get_db),
     staff_id: int = Depends(get_current_staff)
 ):
-    """Reject an application"""
+    """Reject an application and update lead status"""
     application = db.query(Application).filter(Application.id == application_id).first()
     if not application:
         raise HTTPException(status_code=404, detail="Application not found")
@@ -232,31 +236,74 @@ def reject_application(
     if notes:
         application.notes = notes
     
+    # ✅ Update lead status to "rejected"
+    lead = application.lead
+    if lead:
+        lead.status = "rejected"
+        lead.application_status = "rejected"
+        db.commit()
+    
     db.commit()
     db.refresh(application)
     
     return {"message": "Application rejected", "application_id": application.id}
 
 
+
+# download_document function 
 @router.get("/{application_id}/documents/{document_id}/download")
 def download_document(
     application_id: int,
     document_id: int,
+    token: Optional[str] = None,
     db: Session = Depends(get_db),
-    staff_id: int = Depends(get_current_staff)
+    # We need a dependency that can be optional
+    authorization: Optional[str] = None,
 ):
-    """Download a document"""
+    # First, try to authenticate via token
+    authenticated_lead_id = None
+    authenticated_staff = False
+
+    if token:
+        lead = get_lead_by_token(db, token)
+        if lead:
+            authenticated_lead_id = lead.id
+            # Check if this lead owns the application
+            application = db.query(Application).filter(Application.id == application_id).first()
+            if application and application.lead_id == authenticated_lead_id:
+                authenticated_staff = False  # It's a lead, not a staff
+            else:
+                return {"detail": "Not authorized"}, 403
+
+    # If no token, check for staff authentication (JWT)
+    if not authenticated_lead_id and not authenticated_staff:
+        # Attempt to get staff_id from the Authorization header
+        if not authorization or not authorization.startswith("Bearer "):
+            return {"detail": "Not authenticated"}, 401
+        
+        token_str = authorization.split("Bearer ")[1]
+        payload = decode_token(token_str)
+        if not payload:
+            return {"detail": "Invalid token"}, 401
+        
+        staff_id = payload.get("id")
+        if not staff_id:
+            return {"detail": "Invalid token"}, 401
+        
+        authenticated_staff = True
+
+    # Fetch the document
     document = db.query(Document).filter(
         Document.id == document_id,
         Document.application_id == application_id
     ).first()
     
     if not document:
-        raise HTTPException(status_code=404, detail="Document not found")
+        return {"detail": "Document not found"}, 404
     
     # Check if file exists
     if not os.path.exists(document.file_path):
-        raise HTTPException(status_code=404, detail="File not found on server")
+        return {"detail": "File not found on server"}, 404
     
     return FileResponse(
         document.file_path,
@@ -277,7 +324,38 @@ def reopen_application(
     
     application.status = ApplicationStatus.UNDER_REVIEW
     
+    #  Update lead status back to "application"
+    lead = application.lead
+    if lead:
+        lead.status = "application"
+        lead.application_status = "under_review"
+        db.commit()
+    
     db.commit()
     db.refresh(application)
     
     return {"message": "Application reopened for review", "application_id": application.id}
+
+
+@router.get("/validate-token/{token}")
+def validate_token(
+    token: str,
+    db: Session = Depends(get_db)
+):
+    """Validate application token and return lead info"""
+    lead = get_lead_by_token(db, token)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Invalid or expired token")
+    
+    # Check if application already exists
+    existing_application = db.query(Application).filter(Application.lead_id == lead.id).first()
+    if existing_application:
+        raise HTTPException(status_code=400, detail="Application already submitted for this lead")
+    
+    return {
+        "valid": True,
+        "lead_id": lead.id,
+        "lead_name": lead.name,
+        "lead_email": lead.email,
+        "lead_phone": lead.phone
+    }
