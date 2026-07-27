@@ -2,6 +2,8 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 
+# ============ CREATE SCHEMAS ============
+
 class ApplicationCreate(BaseModel):
     lead_id: int
     full_name: str
@@ -29,13 +31,31 @@ class ApplicationCreate(BaseModel):
     preferred_facility: Optional[str] = None
     special_requirements: Optional[str] = None
 
+# ============ UPDATE SCHEMAS ============
+
 class ApplicationUpdate(BaseModel):
     status: Optional[str] = None
     notes: Optional[str] = None
     full_name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
-    # ... other fields can be updated too
+
+# ============ DOCUMENT SCHEMA (Defined FIRST) ============
+
+class DocumentResponse(BaseModel):
+    id: int
+    application_id: int
+    document_type: str
+    file_name: str
+    file_path: str
+    file_size: Optional[int]
+    file_type: Optional[str]
+    uploaded_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+# ============ APPLICATION RESPONSE (Now DocumentResponse exists) ============
 
 class ApplicationResponse(BaseModel):
     id: int
@@ -74,18 +94,8 @@ class ApplicationResponse(BaseModel):
     lead_name: Optional[str] = None
     lead_email: Optional[str] = None
     
-    class Config:
-        from_attributes = True
-
-class DocumentResponse(BaseModel):
-    id: int
-    application_id: int
-    document_type: str
-    file_name: str
-    file_path: str
-    file_size: Optional[int]
-    file_type: Optional[str]
-    uploaded_at: datetime
+    #  Now DocumentResponse is defined
+    documents: Optional[List[DocumentResponse]] = []
     
     class Config:
         from_attributes = True

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from sqlalchemy.orm import Session
+from fastapi.responses import FileResponse
 from sqlalchemy import desc
 from typing import Optional, List
 import os
@@ -145,10 +146,16 @@ def get_application(
     if not application:
         raise HTTPException(status_code=404, detail="Application not found")
     
+    # Get documents
+    documents = db.query(Document).filter(Document.application_id == application_id).all()
+    
     lead = application.lead
     response = ApplicationResponse.from_orm(application)
     response.lead_name = lead.name if lead else None
     response.lead_email = lead.email if lead else None
+    
+    # Add documents to response
+    response.documents = documents
     
     return response
 
@@ -229,3 +236,48 @@ def reject_application(
     db.refresh(application)
     
     return {"message": "Application rejected", "application_id": application.id}
+
+
+@router.get("/{application_id}/documents/{document_id}/download")
+def download_document(
+    application_id: int,
+    document_id: int,
+    db: Session = Depends(get_db),
+    staff_id: int = Depends(get_current_staff)
+):
+    """Download a document"""
+    document = db.query(Document).filter(
+        Document.id == document_id,
+        Document.application_id == application_id
+    ).first()
+    
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Check if file exists
+    if not os.path.exists(document.file_path):
+        raise HTTPException(status_code=404, detail="File not found on server")
+    
+    return FileResponse(
+        document.file_path,
+        filename=document.file_name,
+        media_type=document.file_type or "application/octet-stream"
+    )
+
+@router.post("/{application_id}/reopen")
+def reopen_application(
+    application_id: int,
+    db: Session = Depends(get_db),
+    staff_id: int = Depends(get_current_staff)
+):
+    """Reopen a previously approved/rejected application"""
+    application = db.query(Application).filter(Application.id == application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    application.status = ApplicationStatus.UNDER_REVIEW
+    
+    db.commit()
+    db.refresh(application)
+    
+    return {"message": "Application reopened for review", "application_id": application.id}
