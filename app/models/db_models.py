@@ -122,3 +122,75 @@ class Notification(Base):
     
     # Relationship
     staff = relationship("Staff", backref="notifications")
+
+class ApplicationStatus(str, enum.Enum):
+    DRAFT = "draft"
+    SUBMITTED = "submitted"
+    UNDER_REVIEW = "under_review"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    COMPLETED = "completed"
+
+class Application(Base):
+    __tablename__ = "applications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    lead_id = Column(Integer, ForeignKey("leads.id"), nullable=False)
+    
+    # Personal Information
+    full_name = Column(String(255), nullable=False)
+    email = Column(String(255), nullable=False, index=True)
+    phone = Column(String(50), nullable=False)
+    date_of_birth = Column(String(50), nullable=True)
+    nationality = Column(String(100), nullable=True)
+    current_address = Column(Text, nullable=True)
+    marital_status = Column(String(50), nullable=True)
+    occupation = Column(String(100), nullable=True)
+    
+    # Emergency Contact
+    emergency_name = Column(String(255), nullable=True)
+    emergency_relationship = Column(String(100), nullable=True)
+    emergency_phone = Column(String(50), nullable=True)
+    emergency_email = Column(String(255), nullable=True)
+    
+    # Medical Information
+    medical_conditions = Column(Text, nullable=True)
+    medications = Column(Text, nullable=True)
+    allergies = Column(Text, nullable=True)
+    doctor_name = Column(String(255), nullable=True)
+    doctor_phone = Column(String(50), nullable=True)
+    
+    # Preferences
+    preferred_move_date = Column(String(50), nullable=True)
+    preferred_country = Column(String(100), nullable=True)
+    preferred_facility = Column(String(255), nullable=True)
+    special_requirements = Column(Text, nullable=True)
+    
+    # Status
+    status = Column(Enum(ApplicationStatus), default=ApplicationStatus.DRAFT)
+    notes = Column(Text, nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    submitted_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Relationship
+    lead = relationship("Lead", backref="applications")
+
+class Document(Base):
+    __tablename__ = "documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    application_id = Column(Integer, ForeignKey("applications.id"), nullable=False)
+    
+    document_type = Column(String(50), nullable=False)  # passport, id_card, medical, insurance
+    file_name = Column(String(255), nullable=False)
+    file_path = Column(String(500), nullable=False)
+    file_size = Column(Integer, nullable=True)
+    file_type = Column(String(100), nullable=True)
+    
+    uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationship
+    application = relationship("Application", backref="documents")    
