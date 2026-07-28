@@ -1,17 +1,19 @@
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import FileResponse
-from sqlalchemy import desc
+from sqlalchemy.orm import Session
+from sqlalchemy import desc, func       
 from typing import Optional, List
 import os
 import shutil
 import uuid
 from datetime import datetime
+from pathlib import Path
+
 from app.core.database import get_db
 from app.models.db_models import Application, ApplicationStatus, Lead, Document
 from app.schemas.application import ApplicationCreate, ApplicationUpdate, ApplicationResponse, DocumentResponse
 from app.core.security import decode_token
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.services.application_token_service import get_lead_by_token
 
 
@@ -250,65 +252,91 @@ def reject_application(
 
 
 
-# download_document function 
 @router.get("/{application_id}/documents/{document_id}/download")
 def download_document(
     application_id: int,
     document_id: int,
-    token: Optional[str] = None,
+    token: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-    # We need a dependency that can be optional
-    authorization: Optional[str] = None,
+    credentials: HTTPAuthorizationCredentials = Depends(security),  # ← Use this!
 ):
-    # First, try to authenticate via token
+    """
+    Download a document — supports both:
+    1. Staff authentication via JWT (Authorization header)
+    2. Client authentication via token (query parameter)
+    """
+    
+    # ============ AUTHENTICATION ============
     authenticated_lead_id = None
-    authenticated_staff = False
-
+    authenticated_staff_id = None
+    
+    # Option 1: Token-based authentication (for clients)
     if token:
         lead = get_lead_by_token(db, token)
         if lead:
             authenticated_lead_id = lead.id
             # Check if this lead owns the application
             application = db.query(Application).filter(Application.id == application_id).first()
-            if application and application.lead_id == authenticated_lead_id:
-                authenticated_staff = False  # It's a lead, not a staff
-            else:
-                return {"detail": "Not authorized"}, 403
-
-    # If no token, check for staff authentication (JWT)
-    if not authenticated_lead_id and not authenticated_staff:
-        # Attempt to get staff_id from the Authorization header
-        if not authorization or not authorization.startswith("Bearer "):
-            return {"detail": "Not authenticated"}, 401
-        
-        token_str = authorization.split("Bearer ")[1]
-        payload = decode_token(token_str)
-        if not payload:
-            return {"detail": "Invalid token"}, 401
-        
-        staff_id = payload.get("id")
-        if not staff_id:
-            return {"detail": "Invalid token"}, 401
-        
-        authenticated_staff = True
-
-    # Fetch the document
+            if not application or application.lead_id != authenticated_lead_id:
+                raise HTTPException(status_code=403, detail="Not authorized")
+        else:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    
+    # Option 2: Staff authentication (JWT) — using HTTPBearer
+    if not authenticated_lead_id:
+        try:
+            # The token is in credentials.credentials
+            token_str = credentials.credentials
+            payload = decode_token(token_str)
+            if not payload:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            authenticated_staff_id = payload.get("id")
+            if not authenticated_staff_id:
+                raise HTTPException(status_code=401, detail="Invalid token")
+        except Exception as e:
+            print(f"❌ Auth error: {e}")
+            raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    # If neither authentication method worked
+    if not authenticated_lead_id and not authenticated_staff_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    # ============ FETCH DOCUMENT ============
     document = db.query(Document).filter(
         Document.id == document_id,
         Document.application_id == application_id
     ).first()
     
     if not document:
-        return {"detail": "Document not found"}, 404
+        raise HTTPException(status_code=404, detail="Document not found")
     
-    # Check if file exists
-    if not os.path.exists(document.file_path):
-        return {"detail": "File not found on server"}, 404
+    # ============ BUILD FILE PATH ============
+    # Get the backend root directory
+    backend_root = Path(__file__).parent.parent.parent
     
+    # Build the full path
+    file_path = backend_root / document.file_path
+    
+    # Debug: Print the path
+    print(f"🔍 Looking for file: {file_path}")
+    print(f"   Exists: {file_path.exists()}")
+    
+    # If file doesn't exist, try alternative path
+    if not file_path.exists():
+        # Try just the filename in uploads/documents
+        filename = Path(document.file_path).name
+        alt_path = backend_root / "uploads" / "documents" / filename
+        print(f"🔍 Trying alternative: {alt_path}")
+        if alt_path.exists():
+            file_path = alt_path
+        else:
+            raise HTTPException(status_code=404, detail=f"File not found: {document.file_path}")
+    
+    # ============ RETURN FILE ============
     return FileResponse(
-        document.file_path,
+        path=file_path,
         filename=document.file_name,
-        media_type=document.file_type or "application/octet-stream"
+        media_type=document.file_type or "application/octet-stream",
     )
 
 @router.post("/{application_id}/reopen")
