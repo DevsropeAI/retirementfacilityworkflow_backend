@@ -1,9 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, JSON, Float
-from sqlalchemy.sql import func
-from app.core.database import Base
-import enum
-
-from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, JSON, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, JSON, Float, ForeignKey, Date
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -198,3 +193,46 @@ class Document(Base):
     
     # Relationship
     application = relationship("Application", backref="documents")    
+
+class AgreementStatus(str, enum.Enum):
+    DRAFT = "draft"
+    PENDING = "pending"      # Sent to lead
+    SIGNED = "signed"        # Lead signed
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+class Agreement(Base):
+    __tablename__ = "agreements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    lead_id = Column(Integer, ForeignKey("leads.id"), nullable=False)
+    application_id = Column(Integer, ForeignKey("applications.id"), nullable=True)
+    
+    # Agreement Details
+    agreement_number = Column(String(50), nullable=False, unique=True)
+    facility = Column(String(255), nullable=False)
+    room_number = Column(String(50), nullable=True)
+    move_in_date = Column(Date, nullable=False)
+    monthly_fee = Column(Float, nullable=False)
+    security_deposit = Column(Float, nullable=True)
+    terms_conditions = Column(Text, nullable=True)
+    
+    # Status
+    status = Column(Enum(AgreementStatus), default=AgreementStatus.DRAFT)
+    
+    # Token for client access
+    token = Column(String(64), nullable=True, unique=True)
+    
+    # Signature
+    signature_image = Column(Text, nullable=True)  # Base64 image
+    signed_at = Column(DateTime(timezone=True), nullable=True)
+    signed_pdf_path = Column(String(500), nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Relationships
+    lead = relationship("Lead", backref="agreements")
+    application = relationship("Application", backref="agreements")    

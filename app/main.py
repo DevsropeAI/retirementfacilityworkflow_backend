@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import auth, leads, dashboard, consultations, notifications, applications
+from app.routers import auth, leads, dashboard, consultations, notifications, applications, agreements
 from app.core.database import engine
 from app.models.db_models import Base
 from app.core.config import settings
@@ -28,6 +28,8 @@ app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"]
 app.include_router(consultations.router, prefix="/api/consultations", tags=["consultations"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
 app.include_router(applications.router, prefix="/api/applications", tags=["applications"])
+app.include_router(agreements.router, prefix="/api/agreements", tags=["agreements"])
+
 
 @app.get("/")
 def root():
