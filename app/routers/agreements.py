@@ -319,3 +319,29 @@ def sign_agreement(
         db.commit()
     
     return {"message": "Agreement signed successfully", "agreement_id": agreement.id}
+
+@router.delete("/{agreement_id}")
+def delete_agreement(
+    agreement_id: int,
+    db: Session = Depends(get_db),
+    staff_id: int = Depends(get_current_staff)
+):
+    """Delete an agreement (staff only)"""
+    agreement = db.query(Agreement).filter(Agreement.id == agreement_id).first()
+    if not agreement:
+        raise HTTPException(status_code=404, detail="Agreement not found")
+    
+    # Optionally delete the PDF file if it exists
+    if agreement.signed_pdf_path:
+        try:
+            pdf_path = Path(__file__).parent.parent.parent / agreement.signed_pdf_path
+            if pdf_path.exists():
+                pdf_path.unlink()
+                print(f"🗑️ Deleted PDF: {pdf_path}")
+        except Exception as e:
+            print(f"⚠️ Could not delete PDF: {e}")
+    
+    db.delete(agreement)
+    db.commit()
+    
+    return {"message": "Agreement deleted successfully"}    
