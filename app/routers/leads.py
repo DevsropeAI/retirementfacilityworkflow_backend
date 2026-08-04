@@ -177,6 +177,9 @@ def update_lead(
         if not lead.communication_history:
             lead.communication_history = []
         lead.communication_history.append(history_entry)
+
+    if "assigned_to" in update_data:
+        lead.assigned_to = update_data["assigned_to"]
     
     lead.updated_at = func.now()
     db.commit()

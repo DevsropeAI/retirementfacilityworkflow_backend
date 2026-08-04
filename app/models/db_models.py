@@ -100,6 +100,8 @@ class Staff(Base):
     role = Column(String(50), default="staff")  # admin / staff
     is_active = Column(Integer, default=1)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
 
 class Notification(Base):
     __tablename__ = "notifications"
